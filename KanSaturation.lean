@@ -9,6 +9,9 @@ import KanSaturation.Core.Engine
 -- Instances: the deciders recovered as instances of the one engine.
 import KanSaturation.Instances.Integer
 
+-- Tactic layer: reification of Lean goals into the internal representation.
+import KanSaturation.Tactic.Reify
+
 /-!
 # kan-saturation
 
