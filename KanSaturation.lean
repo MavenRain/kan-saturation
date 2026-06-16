@@ -5,6 +5,7 @@ import KanTactics
 import KanSaturation.Core.Constraint
 import KanSaturation.Core.Saturation
 import KanSaturation.Core.Engine
+import KanSaturation.Core.Eval
 
 -- Instances: the deciders recovered as instances of the one engine.
 import KanSaturation.Instances.Integer
