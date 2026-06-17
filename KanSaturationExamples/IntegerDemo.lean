@@ -46,10 +46,48 @@ example (x : Int) (h₁ : 1 ≤ x) (h₂ : x ≤ 0) : False := by kan_saturate
 example (x : Int) (h₁ : 2 ≤ x) (h₂ : x ≤ 1) : False := by kan_saturate
 example (a b : Int) (h₁ : a + 1 ≤ b) (h₂ : b ≤ a) : False := by kan_saturate
 
+/-- A named version of the headline refutation, so the produced proof term can be
+audited: `#print axioms` below confirms it is axiom-clean (no `sorry`, no extra axioms
+beyond what the kernel's `decide` reductions need). -/
+theorem demo_refute (x : Int) (h₁ : 1 ≤ x) (h₂ : x ≤ 0) : False := by kan_saturate
+
+#print axioms demo_refute
+
 -- Extended reifier: subtraction, unary negation, and multiplication by a constant.
 example (x : Int) (h₁ : 1 ≤ x - 1) (h₂ : x ≤ 1) : False := by kan_saturate
 example (x : Int) (h₁ : 1 ≤ -x) (h₂ : 0 ≤ x) : False := by kan_saturate
 example (x : Int) (h₁ : 2 * x ≤ 2) (h₂ : 2 ≤ x) : False := by kan_saturate
 example (x : Int) (h₁ : x * 3 ≤ 3) (h₂ : 2 ≤ x) : False := by kan_saturate
+
+/-! ## Strict, equality, and reversed comparison hypotheses.
+
+`<`/`>` carry the integer strictness step `a < b ↔ a + 1 ≤ b`, so `0 < x < 1` is
+refuted over ℤ (it is satisfiable over ℚ); `=` contributes both `≤` directions; `≥`/`>`
+are the swapped duals. -/
+
+example (x : Int) (h₁ : 0 < x) (h₂ : x < 1) : False := by kan_saturate
+example (x : Int) (h₁ : x = 5) (h₂ : x ≤ 3) : False := by kan_saturate
+example (x : Int) (h₁ : x ≥ 5) (h₂ : x ≤ 3) : False := by kan_saturate
+example (x : Int) (h₁ : x > 5) (h₂ : x ≤ 5) : False := by kan_saturate
+
+/-! ## Comparison goals, closed by negate-and-refute. -/
+
+example (x : Int) (h : x ≤ 3) : x ≤ 5 := by kan_saturate
+example (x : Int) (h : x ≤ 3) : x < 5 := by kan_saturate
+example (x : Int) (h : 5 ≤ x) : x ≥ 3 := by kan_saturate
+example (x : Int) (h : 5 ≤ x) : x > 3 := by kan_saturate
+example (x : Int) (h₁ : x ≤ 5) (h₂ : 5 ≤ x) : x = 5 := by kan_saturate
+example (x : Int) (h : x ≤ 3) : ¬ (5 ≤ x) := by kan_saturate
+
+/-! ## Multi-variable Fourier-Motzkin (engine saturation, including non-unit
+coefficients).  These need several elimination rounds and exercise the saturation loop;
+the bounded-basis termination guard keeps the *satisfiable* cousins of these systems
+failing fast rather than chasing unbounded coefficient growth. -/
+
+example (a b c : Int) (h₁ : a ≤ b) (h₂ : b ≤ c) (h₃ : c < a) : False := by kan_saturate
+example (a b c : Int) (h₁ : a ≤ b) (h₂ : b ≤ c) (h₃ : c ≤ a - 1) : False := by kan_saturate
+example (a b : Int) (h₁ : 2 * a ≤ b) (h₂ : 2 * b ≤ a) (h₃ : 1 ≤ a) : False := by kan_saturate
+example (a b c : Int) (h₁ : 3*a ≤ b) (h₂ : 3*b ≤ c) (h₃ : 3*c ≤ a) (h₄ : 1 ≤ a) : False := by
+  kan_saturate
 
 end KanSaturationExamples.IntegerDemo

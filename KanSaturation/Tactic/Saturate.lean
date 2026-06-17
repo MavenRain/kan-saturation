@@ -103,55 +103,89 @@ partial def reifyEvalProof (envExpr : Expr) (e : Expr) :
         reifyAtom envExpr e
   | _ => reifyAtom envExpr e
 
-/-- Collect the local hypotheses that are integer `≤` comparisons, as
-`(lhs, rhs, proofExpr)` triples. -/
-def collectLeHyps : MetaM (Array (Expr × Expr × Expr)) := do
-  (← getLCtx).foldlM (init := #[]) fun acc decl => do
+/-- Collect the local integer comparison hypotheses, normalized to `(rel, lhs, rhs,
+proofExpr)` with `rel ∈ {le, lt, eq}`.  `a ≥ b` is recorded as `b ≤ a` and `a > b` as
+`b < a` (these hold definitionally, so the stored proof is reused as-is). -/
+def collectComparisonHyps : MetaM (Array (Rel × Expr × Expr × Expr)) := do
+  (← getLCtx).foldlM (init := (#[] : Array (Rel × Expr × Expr × Expr))) fun acc decl => do
     if decl.isImplementationDetail then return acc
+    let pf := decl.toExpr
     match decl.type.getAppFnArgs with
     | (``LE.le, #[ty, _, a, b]) =>
-        if ty.isConstOf ``Int then return acc.push (a, b, decl.toExpr) else return acc
+        if ty.isConstOf ``Int then return acc.push (.le, a, b, pf) else return acc
+    | (``LT.lt, #[ty, _, a, b]) =>
+        if ty.isConstOf ``Int then return acc.push (.lt, a, b, pf) else return acc
+    | (``GE.ge, #[ty, _, a, b]) =>
+        if ty.isConstOf ``Int then return acc.push (.le, b, a, pf) else return acc
+    | (``GT.gt, #[ty, _, a, b]) =>
+        if ty.isConstOf ``Int then return acc.push (.lt, b, a, pf) else return acc
+    | (``Eq, #[ty, a, b]) =>
+        if ty.isConstOf ``Int then return acc.push (.eq, a, b, pf) else return acc
     | _ => return acc
 
-/-- The unifying decision tactic, instantiated at the integer `Saturation`.  Closes a
-`False` goal from contradictory integer `≤` hypotheses by running the engine and
-replaying its certificate into a kernel-checked proof. -/
-elab "kan_saturate" : tactic => do
-  let goal ← getMainGoal
-  goal.withContext do
-    let hyps ← collectLeHyps
-    -- pass 1: discover atoms (forms do not depend on env)
-    let dummy ← buildEnv #[]
-    let atoms ← hyps.foldlM (init := (#[] : Array Expr)) fun atoms hyp => do
-      let (l, r, _) := hyp
-      let (_, atoms) ← (reifyEvalProof dummy l).run atoms
-      let (_, atoms) ← (reifyEvalProof dummy r).run atoms
-      pure atoms
-    let envExpr ← buildEnv atoms
-    -- pass 2: build facts and `holds` proofs against the real env
-    let init : Array (Fact × Expr) × Array Expr := (#[], atoms)
-    let result ← hyps.foldlM (init := init) fun acc hyp => do
-      let (fhs, atoms') := acc
-      let (l, r, pf) := hyp
-      let ((formL, pL), atoms'') ← (reifyEvalProof envExpr l).run atoms'
-      let ((formR, pR), atoms''') ← (reifyEvalProof envExpr r).run atoms''
-      let fact : Fact := { rel := .le, form := formR.add (formL.scale (-1)) }
-      let holds := mkAppN (mkConst ``holds_le_of)
-        #[envExpr, toExpr formL, toExpr formR, l, r, pL, pR, pf]
-      pure (fhs.push (fact, holds), atoms''')
-    let factsHolds := result.1
-    let facts := (factsHolds.map (·.1)).toList
-    let cert ← (Integer.solve facts).toOption.getDM
-      (throwError "kan_saturate: no refutation in the linear integer fragment")
+/-- Run the engine on the current local context's integer comparisons and replay its
+certificate into a kernel-checked proof of `False`.  Returns `none` when there is no
+refutation (errors are values, not thrown).  Every comparison is reduced to `≤`-facts
+(`0 ≤ form`): `<` is tightened by one (integer strictness `a < b ↔ a + 1 ≤ b`); `=`
+contributes both directions. -/
+def proveFalse : MetaM (Option Expr) := do
+  let hyps ← collectComparisonHyps
+  -- pass 1: discover atoms (forms do not depend on env)
+  let dummy ← buildEnv #[]
+  let atoms ← hyps.foldlM (init := (#[] : Array Expr)) fun atoms hyp => do
+    let (_, l, r, _) := hyp
+    let (_, atoms) ← (reifyEvalProof dummy l).run atoms
+    let (_, atoms) ← (reifyEvalProof dummy r).run atoms
+    pure atoms
+  let envExpr ← buildEnv atoms
+  -- pass 2: build the `≤`-facts and their `holds` proofs against the real env
+  let init : Array (Fact × Expr) × Array Expr := (#[], atoms)
+  let result ← hyps.foldlM (init := init) fun acc hyp => do
+    let (fhs, atoms') := acc
+    let (rel, l, r, pf) := hyp
+    let ((formL, pL), atoms'') ← (reifyEvalProof envExpr l).run atoms'
+    let ((formR, pR), atoms''') ← (reifyEvalProof envExpr r).run atoms''
+    let diff := formR.add (formL.scale (-1))
+    let entries ← match rel with
+      | .le =>
+          let fact : Fact := { rel := .le, form := diff }
+          let holds := mkAppN (mkConst ``holds_le_of)
+            #[envExpr, toExpr formL, toExpr formR, l, r, pL, pR, pf]
+          pure #[(fact, holds)]
+      | .lt =>
+          let fact : Fact := { rel := .le, form := diff.add (LinForm.mk [] (-1)) }
+          let holds := mkAppN (mkConst ``holds_lt_of)
+            #[envExpr, toExpr formL, toExpr formR, l, r, pL, pR, pf]
+          pure #[(fact, holds)]
+      | .eq =>
+          let factLe : Fact := { rel := .le, form := diff }
+          let factGe : Fact := { rel := .le, form := formL.add (formR.scale (-1)) }
+          let holdsLe := mkAppN (mkConst ``holds_le_of)
+            #[envExpr, toExpr formL, toExpr formR, l, r, pL, pR, ← mkAppM ``Int.le_of_eq #[pf]]
+          let holdsGe := mkAppN (mkConst ``holds_le_of)
+            #[envExpr, toExpr formR, toExpr formL, r, l, pR, pL,
+              ← mkAppM ``Int.le_of_eq #[← mkEqSymm pf]]
+          pure #[(factLe, holdsLe), (factGe, holdsGe)]
+    pure (fhs ++ entries, atoms''')
+  let factsHolds := result.1
+  let facts := (factsHolds.map (·.1)).toList
+  -- resolve the certificate into `(coeff, fact, holds)` triples; `none` if the engine
+  -- found no refutation, a combination references a stale index, or any coefficient is
+  -- negative (our replay only scales by nonnegative coefficients).  All handled as data:
+  -- this guard is what keeps the `mkDecideProof (0 ≤ c)` below from ever being asked to
+  -- decide a false proposition (which would throw instead of failing gracefully).
+  let resolved : Option (List (Int × Fact × Expr)) :=
+    ((Integer.solve facts).toOption.bind fun cert =>
+      cert.combo.mapM fun ci => (factsHolds[ci.2]?).map fun fh => (ci.1, fh.1, fh.2)).bind
+      fun combo => if combo.all fun e => decide (0 ≤ e.1) then some combo else none
+  let nested ← resolved.mapM fun combo => do
     -- fold the certificate combination: ∑ cᵢ · factᵢ, accumulating the proof
     let zeroForm : LinForm := { terms := [], const := 0 }
     let zeroProof := mkApp (mkConst ``Int.le_refl) (toExpr (0 : Int))
-    let (foldedForm, foldedProof) ← cert.combo.foldlM
-      (fun (acc : LinForm × Expr) (ci : Int × Nat) => do
+    let (foldedForm, foldedProof) ← combo.foldlM
+      (fun (acc : LinForm × Expr) (entry : Int × Fact × Expr) => do
         let (accForm, accProof) := acc
-        let (c, idx) := ci
-        let (fact, holds) ← (factsHolds[idx]?).getDM
-          (throwError "kan_saturate: bad certificate index")
+        let (c, fact, holds) := entry
         let scaled := fact.form.scale c
         let cNonneg ← mkDecideProof (← mkAppM ``LE.le #[toExpr (0 : Int), toExpr c])
         let scaledProof := mkAppN (mkConst ``holds_le_scale)
@@ -160,14 +194,74 @@ elab "kan_saturate" : tactic => do
           #[envExpr, toExpr accForm, toExpr scaled, accProof, scaledProof]
         pure (accForm.add scaled, addProof))
       (zeroForm, zeroProof)
-    -- close: the folded form is nonneg, collapses to all-zero terms, negative constant
-    let collapseExpr ← mkAppM ``collapse #[toExpr foldedForm.terms]
-    let allExpr ← mkAppM ``List.all #[collapseExpr, mkConst ``isZeroCoeff]
-    let hCollapse ← mkDecideProof (← mkEq allExpr (toExpr true))
-    let hneg ← mkDecideProof (← mkAppM ``LT.lt #[toExpr foldedForm.const, toExpr (0 : Int)])
-    let falseProof := mkAppN (mkConst ``false_of_fold)
-      #[envExpr, toExpr foldedForm, foldedProof, hCollapse, hneg]
-    goal.assign falseProof
+    -- the folded residual must collapse to all-zero terms with a negative constant;
+    -- otherwise the certificate does not witness a contradiction, so fail gracefully
+    -- (rather than ask `mkDecideProof` to prove a false `hCollapse`/`hneg`).
+    if (collapse foldedForm.terms).all isZeroCoeff && decide (foldedForm.const < 0) then
+      let collapseExpr ← mkAppM ``collapse #[toExpr foldedForm.terms]
+      let allExpr ← mkAppM ``List.all #[collapseExpr, mkConst ``isZeroCoeff]
+      let hCollapse ← mkDecideProof (← mkEq allExpr (toExpr true))
+      let hneg ← mkDecideProof (← mkAppM ``LT.lt #[toExpr foldedForm.const, toExpr (0 : Int)])
+      pure (some (mkAppN (mkConst ``false_of_fold)
+        #[envExpr, toExpr foldedForm, foldedProof, hCollapse, hneg]))
+    else pure none
+  pure nested.join
+
+/-- Prove a single comparison goal by contradiction: introduce the negated comparison
+`negHyp` as a hypothesis, refute with `proveFalse`, then re-wrap with the `Int.not_*`
+equivalence `iffLemma` (applied to `sideArgs`) whose right side is the goal.  `none`
+propagates when the refutation fails. -/
+def closeByNeg (iffLemma : Name) (sideArgs : Array Expr) (negHyp : Expr) :
+    MetaM (Option Expr) := do
+  let lamOpt ← withLocalDeclD `h negHyp fun h => do
+    (← proveFalse).mapM fun fp => mkLambdaFVars #[h] fp
+  lamOpt.mapM fun lam => do mkAppM ``Iff.mp #[← mkAppOptM iffLemma (sideArgs.map some), lam]
+
+/-- Build the proof for whatever goal shape `kan_saturate` supports: `False`, an integer
+comparison (`≤`, `<`, `≥`, `>`, `=`), or the negation of a comparison.  Returns `none`
+for an unsupported goal or a failed refutation. -/
+def dispatchGoal (goalType : Expr) : MetaM (Option Expr) := do
+  if goalType.isConstOf ``False then proveFalse
+  else do
+    let isInt (ty : Expr) : Bool := ty.isConstOf ``Int
+    match goalType.getAppFnArgs with
+    | (``LE.le, #[ty, _, a, b]) => do
+        -- a ≤ b  ⟸  ¬(b < a)
+        if isInt ty then closeByNeg ``Int.not_lt #[b, a] (← mkAppM ``LT.lt #[b, a]) else pure none
+    | (``LT.lt, #[ty, _, a, b]) => do
+        -- a < b  ⟸  ¬(b ≤ a)
+        if isInt ty then closeByNeg ``Int.not_le #[b, a] (← mkAppM ``LE.le #[b, a]) else pure none
+    | (``GE.ge, #[ty, _, a, b]) => do
+        -- a ≥ b  is  b ≤ a  ⟸  ¬(a < b)
+        if isInt ty then closeByNeg ``Int.not_lt #[a, b] (← mkAppM ``LT.lt #[a, b]) else pure none
+    | (``GT.gt, #[ty, _, a, b]) => do
+        -- a > b  is  b < a  ⟸  ¬(a ≤ b)
+        if isInt ty then closeByNeg ``Int.not_le #[a, b] (← mkAppM ``LE.le #[a, b]) else pure none
+    | (``Eq, #[ty, a, b]) => do
+        -- a = b  by antisymmetry of the two ≤ directions
+        if isInt ty then
+          let p1Opt ← closeByNeg ``Int.not_lt #[b, a] (← mkAppM ``LT.lt #[b, a])
+          let p2Opt ← closeByNeg ``Int.not_lt #[a, b] (← mkAppM ``LT.lt #[a, b])
+          (p1Opt.bind fun p1 => p2Opt.map fun p2 => (p1, p2)).mapM fun (p1, p2) =>
+            mkAppM ``Int.le_antisymm #[p1, p2]
+        else pure none
+    | (``Not, #[p]) =>
+        -- ¬P  is  P → False: introduce P, refute
+        withLocalDeclD `h p fun h => do (← proveFalse).mapM fun fp => mkLambdaFVars #[h] fp
+    | _ => pure none
+
+/-- The unifying decision tactic, instantiated at the integer `Saturation`.  Closes a
+`False` goal, an integer comparison goal (`≤`, `<`, `≥`, `>`, `=`), or the negation of
+one, from the contradictory integer comparison hypotheses in context, by running the
+engine and replaying its certificate into a kernel-checked proof.  The single boundary
+`throwError` is the tactic-failure signal (a tactic must report when it cannot close the
+goal); all internal error handling threads `Option`. -/
+elab "kan_saturate" : tactic => do
+  let goal ← getMainGoal
+  goal.withContext do
+    (← dispatchGoal (← goal.getType)).elim
+      (throwError "kan_saturate: could not close the goal in the linear integer fragment")
+      goal.assign
 
 end Tactic
 end KanSaturation

@@ -53,6 +53,19 @@ def normalize (f : LinForm) : LinForm :=
     if c == 0 then none else some (c, v)
   { terms := collected, const := f.const }
 
+/-- A canonical key for comparing forms *up to positive scaling and term order*:
+normalize, divide out the content gcd (gcd of all coefficients and the constant), and
+sort terms by variable.  Used only for deduplication in the saturation loop — the stored
+form, hence any certificate combination, is never divided, so this does not affect the
+replayed proof. -/
+def key (f : LinForm) : LinForm :=
+  let n := f.normalize
+  let g : Nat := n.terms.foldl (init := n.const.natAbs) fun acc (c, _) => Nat.gcd acc c.natAbs
+  let d : LinForm := if g > 1 then
+      { terms := n.terms.map (fun (c, v) => (c / (g : Int), v)), const := n.const / (g : Int) }
+    else n
+  { d with terms := (d.terms.toArray.qsort (fun a b => decide (a.2 < b.2))).toList }
+
 end LinForm
 
 /-- The comparison a fact asserts of its form against `0`. -/

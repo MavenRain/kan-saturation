@@ -24,9 +24,17 @@ inductive EngineError where
   | exhausted
   deriving Repr, Inhabited, BEq
 
+/-- A cap on the basis size.  Once the closure exceeds it the engine bails with
+`exhausted` rather than chase a runaway-growth fact set (e.g. cyclic systems with
+non-unit coefficients).  This is a *sound* termination bound: a refused fact can only
+cost a refutation (incompleteness), never create an unsound one.  Realistic problems
+saturate or refute far below it (each round costs roughly `basis²`, so the cap is kept
+small to bound per-round work, not just total rounds). -/
+def maxBasis : Nat := 128
+
 /-- Close `basis` under `consequences` (reducing every new fact to normal form),
-checking for a refutation after each round, until a refutation, a fixpoint, or fuel
-exhaustion.  Recursion is structural on `fuel`. -/
+checking for a refutation after each round, until a refutation, a fixpoint, the basis
+size cap, or fuel exhaustion.  Recursion is structural on `fuel`. -/
 def saturate {F Cert : Type} [BEq F] [Saturation F Cert]
     (basis : Array F) (fuel : Nat) : Except EngineError Cert :=
   match Saturation.refuted? (Cert := Cert) basis with
@@ -35,15 +43,18 @@ def saturate {F Cert : Type} [BEq F] [Saturation F Cert]
     match fuel with
     | 0 => .error .exhausted
     | fuel + 1 =>
-      let candidates : Array F :=
-        basis.foldl (init := #[]) fun acc f =>
-          acc ++ (Saturation.consequences (Cert := Cert) basis f).map
-            (Saturation.reduce (Cert := Cert) basis)
-      let fresh := candidates.filter fun g => !basis.contains g
-      if fresh.isEmpty then
-        .error .saturated
+      if basis.size > maxBasis then
+        .error .exhausted
       else
-        saturate (basis ++ fresh) fuel
+        let candidates : Array F :=
+          basis.foldl (init := #[]) fun acc f =>
+            acc ++ (Saturation.consequences (Cert := Cert) basis f).map
+              (Saturation.reduce (Cert := Cert) basis)
+        let fresh := candidates.filter fun g => !basis.contains g
+        if fresh.isEmpty then
+          .error .saturated
+        else
+          saturate (basis ++ fresh) fuel
 
 /-- Run the engine on a starting fact set with a default fuel bound. -/
 def run {F Cert : Type} [BEq F] [Saturation F Cert]

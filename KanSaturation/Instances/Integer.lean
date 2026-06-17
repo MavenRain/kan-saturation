@@ -33,10 +33,12 @@ structure DFact where
   combo : List (Int × Nat)
   deriving Repr, Inhabited
 
-/-- Logical equality of derived facts compares only the constraint; the provenance is
-bookkeeping, so the engine deduplicates by logical content. -/
+/-- Logical equality of derived facts compares only the constraint, *up to positive
+scaling and term order* (via `LinForm.key`): the provenance is bookkeeping, and scalar
+multiples of a constraint are logically equivalent, so the engine deduplicates them.
+This is what lets the saturation loop reach a fixpoint instead of chasing `-3b, -6b, …`. -/
 instance : BEq DFact where
-  beq a b := a.fact == b.fact
+  beq a b := a.fact.rel == b.fact.rel && a.fact.form.key == b.fact.form.key
 
 /-- A refutation certificate: the combination of original hypotheses yielding a
 manifestly false constant constraint, plus that residual for replay/diagnostics. -/
@@ -95,13 +97,24 @@ def resolve (v : Var) (d e : DFact) : Option DFact :=
     | .lt, .le => none
     | .lt, .lt => none
 
-/-- The saturation step: all sound one-variable eliminations of `d` against `basis`. -/
+/-- A magnitude cap on derived coefficients.  Resolvents whose coefficients or constant
+exceed it are dropped — a *sound* incompleteness bound (dropping a derived fact can only
+cost a refutation, never fabricate one), which stops the accumulate-only saturation loop
+from chasing the unbounded coefficient growth of cyclic systems with non-unit
+coefficients.  Realistic Farkas certificates have tiny coefficients, far under this. -/
+def coeffCap : Nat := 1 <<< 14
+
+/-- Whether any coefficient or the constant of `f` exceeds `coeffCap` in magnitude. -/
+def tooBig (f : LinForm) : Bool :=
+  f.const.natAbs > coeffCap || f.terms.any fun ce => ce.1.natAbs > coeffCap
+
+/-- The saturation step: all sound one-variable eliminations of `d` against `basis`,
+dropping any resolvent whose coefficients exceed `coeffCap`. -/
 def consequences (basis : Array DFact) (d : DFact) : Array DFact :=
   d.fact.form.vars.foldl (init := #[]) fun acc v =>
     basis.foldl (init := acc) fun acc' e =>
-      match resolve v d e with
-      | some r => acc'.push r
-      | none   => acc'
+      (resolve v d e).elim acc' fun r =>
+        if tooBig r.fact.form then acc' else acc'.push r
 
 /-- Detect a derived constant-false fact and return its certificate. -/
 def refuted? (basis : Array DFact) : Option Cert :=

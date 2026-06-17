@@ -47,4 +47,20 @@ theorem holds_le_of (env : Var → Int) (formL formR : LinForm) (lhs rhs : Int)
       |>.trans (congrArg (fun w => rhs + w) (Int.neg_one_mul lhs))
       |>.trans Int.sub_eq_add_neg.symm).symm ▸ Int.sub_nonneg.mpr hyp)
 
+/-- From a strict hypothesis `lhs < rhs` over ℤ and reifications of both sides, the
+*tightened* difference form `(rhs - lhs) - 1` holds (`0 ≤ eval`).  This is the integer
+strictness step `a < b ↔ a + 1 ≤ b`, recovered as a `≤`-fact so the engine never needs
+a separate strict relation. -/
+theorem holds_lt_of (env : Var → Int) (formL formR : LinForm) (lhs rhs : Int)
+    (pL : lhs = formL.eval env) (pR : rhs = formR.eval env) (hyp : lhs < rhs) :
+    0 ≤ ((formR.add (formL.scale (-1))).add (LinForm.mk [] (-1))).eval env := by
+  kan_exact
+    (((LinForm.eval_add env (formR.add (formL.scale (-1))) (LinForm.mk [] (-1)))
+        |>.trans (congrArg (fun t => t + (LinForm.mk [] (-1)).eval env)
+            (reify_sub env formR formL rhs lhs pR pL).symm)
+        |>.trans (congrArg (HAdd.hAdd (rhs - lhs)) (LinForm.eval_const env (-1)))).symm
+      ▸ (@Int.sub_eq_add_neg (rhs - lhs) 1
+          ▸ Int.sub_nonneg.mpr
+              (Int.zero_add 1 ▸ Int.lt_iff_add_one_le.mp (Int.sub_pos.mpr hyp))))
+
 end KanSaturation
