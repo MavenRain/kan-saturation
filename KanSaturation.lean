@@ -8,9 +8,11 @@ import KanSaturation.Core.Engine
 import KanSaturation.Core.Eval
 import KanSaturation.Core.Reflect
 import KanSaturation.Core.Collapse
+import KanSaturation.Core.OrderedField
 
 -- Instances: the deciders recovered as instances of the one engine.
 import KanSaturation.Instances.Integer
+import KanSaturation.Instances.OrderedField
 
 -- Tactic layer: reification of Lean goals, and the verified reifier for replay.
 import KanSaturation.Tactic.Reify
@@ -45,8 +47,9 @@ not on that theorem, so the whole stack stays Mathlib-free:
 * `KanSaturation.Core.Constraint`  — own datatypes over core ℤ/ℚ
 * `KanSaturation.Core.Saturation`  — the unifying-completeness interface
 * `KanSaturation.Core.Engine`      — the one saturate→reduce→refute algorithm
+* `KanSaturation.Core.OrderedField`— the ordered-field carrier + ℚ Farkas soundness
 * `KanSaturation.Core.Certificate` — certificate replay into a checked proof
 * `KanSaturation.Reflector`        — the saturation Kan extension via `adjToLan`
-* `KanSaturation.Tactic.Saturate`  — the single tactic `kan_saturate`
+* `KanSaturation.Tactic.Saturate`  — the single tactic `kan_saturate` (ℤ and ℚ)
 * `KanSaturation.Instances.*`      — omega / linarith / polyrith as instances
 -/

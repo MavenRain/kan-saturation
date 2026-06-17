@@ -5,6 +5,7 @@ import KanSaturation.Core.Collapse
 import KanSaturation.Core.Engine
 import KanSaturation.Instances.Integer
 import KanSaturation.Tactic.Reify
+import KanSaturation.Tactic.SaturateField
 import KanTactics
 import Lean
 
@@ -27,9 +28,7 @@ open Lean Lean.Meta Lean.Elab.Tactic
 
 namespace KanSaturation
 
-deriving instance ToExpr for Rel
-deriving instance ToExpr for LinForm
-deriving instance ToExpr for Fact
+-- `ToExpr` for `Rel`/`LinForm`/`Fact` is derived once in `Tactic.SaturateField` (imported).
 
 namespace Tactic
 
@@ -217,26 +216,39 @@ def closeByNeg (iffLemma : Name) (sideArgs : Array Expr) (negHyp : Expr) :
     (← proveFalse).mapM fun fp => mkLambdaFVars #[h] fp
   lamOpt.mapM fun lam => do mkAppM ``Iff.mp #[← mkAppOptM iffLemma (sideArgs.map some), lam]
 
+/-- Refute the current context: try the integer engine, then the ordered-field one. -/
+def proveFalseAny : MetaM (Option Expr) := do
+  let r ← proveFalse
+  if r.isSome then pure r else proveFalseQ
+
 /-- Build the proof for whatever goal shape `kan_saturate` supports: `False`, an integer
-comparison (`≤`, `<`, `≥`, `>`, `=`), or the negation of a comparison.  Returns `none`
-for an unsupported goal or a failed refutation. -/
+or rational comparison (`≤`, `<`, `≥`, `>`, `=`), or the negation of a comparison.  The
+integer comparison cases use the `omega` leg; rational ones the `linarith` leg.  Returns
+`none` for an unsupported goal or a failed refutation. -/
 def dispatchGoal (goalType : Expr) : MetaM (Option Expr) := do
-  if goalType.isConstOf ``False then proveFalse
+  if goalType.isConstOf ``False then
+    -- the contradictory hypotheses may be integer (`omega` leg) or rational (`linarith`
+    -- leg); try the integer engine first, then the ordered-field one.
+    proveFalseAny
   else do
     let isInt (ty : Expr) : Bool := ty.isConstOf ``Int
     match goalType.getAppFnArgs with
     | (``LE.le, #[ty, _, a, b]) => do
         -- a ≤ b  ⟸  ¬(b < a)
-        if isInt ty then closeByNeg ``Int.not_lt #[b, a] (← mkAppM ``LT.lt #[b, a]) else pure none
+        if isInt ty then closeByNeg ``Int.not_lt #[b, a] (← mkAppM ``LT.lt #[b, a])
+        else dispatchGoalQ goalType
     | (``LT.lt, #[ty, _, a, b]) => do
         -- a < b  ⟸  ¬(b ≤ a)
-        if isInt ty then closeByNeg ``Int.not_le #[b, a] (← mkAppM ``LE.le #[b, a]) else pure none
+        if isInt ty then closeByNeg ``Int.not_le #[b, a] (← mkAppM ``LE.le #[b, a])
+        else dispatchGoalQ goalType
     | (``GE.ge, #[ty, _, a, b]) => do
         -- a ≥ b  is  b ≤ a  ⟸  ¬(a < b)
-        if isInt ty then closeByNeg ``Int.not_lt #[a, b] (← mkAppM ``LT.lt #[a, b]) else pure none
+        if isInt ty then closeByNeg ``Int.not_lt #[a, b] (← mkAppM ``LT.lt #[a, b])
+        else dispatchGoalQ goalType
     | (``GT.gt, #[ty, _, a, b]) => do
         -- a > b  is  b < a  ⟸  ¬(a ≤ b)
-        if isInt ty then closeByNeg ``Int.not_le #[a, b] (← mkAppM ``LE.le #[a, b]) else pure none
+        if isInt ty then closeByNeg ``Int.not_le #[a, b] (← mkAppM ``LE.le #[a, b])
+        else dispatchGoalQ goalType
     | (``Eq, #[ty, a, b]) => do
         -- a = b  by antisymmetry of the two ≤ directions
         if isInt ty then
@@ -244,23 +256,24 @@ def dispatchGoal (goalType : Expr) : MetaM (Option Expr) := do
           let p2Opt ← closeByNeg ``Int.not_lt #[a, b] (← mkAppM ``LT.lt #[a, b])
           (p1Opt.bind fun p1 => p2Opt.map fun p2 => (p1, p2)).mapM fun (p1, p2) =>
             mkAppM ``Int.le_antisymm #[p1, p2]
-        else pure none
+        else dispatchGoalQ goalType
     | (``Not, #[p]) =>
-        -- ¬P  is  P → False: introduce P, refute
-        withLocalDeclD `h p fun h => do (← proveFalse).mapM fun fp => mkLambdaFVars #[h] fp
+        -- ¬P  is  P → False: introduce P, refute (integer leg, then ordered-field leg)
+        withLocalDeclD `h p fun h => do (← proveFalseAny).mapM fun fp => mkLambdaFVars #[h] fp
     | _ => pure none
 
-/-- The unifying decision tactic, instantiated at the integer `Saturation`.  Closes a
-`False` goal, an integer comparison goal (`≤`, `<`, `≥`, `>`, `=`), or the negation of
-one, from the contradictory integer comparison hypotheses in context, by running the
-engine and replaying its certificate into a kernel-checked proof.  The single boundary
-`throwError` is the tactic-failure signal (a tactic must report when it cannot close the
-goal); all internal error handling threads `Option`. -/
+/-- The unifying decision tactic, instantiated at both the integer (`omega`) and
+ordered-field (`linarith`, over `ℚ`) `Saturation` legs.  Closes a `False` goal, a
+comparison goal over `ℤ` or `ℚ` (`≤`, `<`, `≥`, `>`, `=`), or the negation of one, from
+the contradictory comparison hypotheses in context, by running the shared engine and
+replaying its certificate into a kernel-checked proof.  The single boundary `throwError`
+is the tactic-failure signal (a tactic must report when it cannot close the goal); all
+internal error handling threads `Option`. -/
 elab "kan_saturate" : tactic => do
   let goal ← getMainGoal
   goal.withContext do
     (← dispatchGoal (← goal.getType)).elim
-      (throwError "kan_saturate: could not close the goal in the linear integer fragment")
+      (throwError "kan_saturate: could not close the goal in the linear integer or ordered-field fragment")
       goal.assign
 
 end Tactic
