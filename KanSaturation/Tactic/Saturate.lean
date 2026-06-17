@@ -1,6 +1,9 @@
 import KanSaturation.Core.Constraint
 import KanSaturation.Core.Eval
 import KanSaturation.Core.Reflect
+import KanSaturation.Core.Collapse
+import KanSaturation.Core.Engine
+import KanSaturation.Instances.Integer
 import KanSaturation.Tactic.Reify
 import KanTactics
 import Lean
@@ -19,7 +22,7 @@ Scope (this part): `+`, integer literals, and atoms, with any other shape intern
 an opaque atom (sound; richer shapes such as `*` and `-` are added later).
 -/
 
-open Lean Lean.Meta
+open Lean Lean.Meta Lean.Elab.Tactic
 
 namespace KanSaturation
 
@@ -66,6 +69,72 @@ partial def reifyEvalProof (envExpr : Expr) (e : Expr) :
       else
         reifyAtom envExpr e
   | _ => reifyAtom envExpr e
+
+/-- Collect the local hypotheses that are integer `≤` comparisons, as
+`(lhs, rhs, proofExpr)` triples. -/
+def collectLeHyps : MetaM (Array (Expr × Expr × Expr)) := do
+  (← getLCtx).foldlM (init := #[]) fun acc decl => do
+    if decl.isImplementationDetail then return acc
+    match decl.type.getAppFnArgs with
+    | (``LE.le, #[ty, _, a, b]) =>
+        if ty.isConstOf ``Int then return acc.push (a, b, decl.toExpr) else return acc
+    | _ => return acc
+
+/-- The unifying decision tactic, instantiated at the integer `Saturation`.  Closes a
+`False` goal from contradictory integer `≤` hypotheses by running the engine and
+replaying its certificate into a kernel-checked proof. -/
+elab "kan_saturate" : tactic => do
+  let goal ← getMainGoal
+  goal.withContext do
+    let hyps ← collectLeHyps
+    -- pass 1: discover atoms (forms do not depend on env)
+    let dummy ← buildEnv #[]
+    let atoms ← hyps.foldlM (init := (#[] : Array Expr)) fun atoms hyp => do
+      let (l, r, _) := hyp
+      let (_, atoms) ← (reifyEvalProof dummy l).run atoms
+      let (_, atoms) ← (reifyEvalProof dummy r).run atoms
+      pure atoms
+    let envExpr ← buildEnv atoms
+    -- pass 2: build facts and `holds` proofs against the real env
+    let init : Array (Fact × Expr) × Array Expr := (#[], atoms)
+    let result ← hyps.foldlM (init := init) fun acc hyp => do
+      let (fhs, atoms') := acc
+      let (l, r, pf) := hyp
+      let ((formL, pL), atoms'') ← (reifyEvalProof envExpr l).run atoms'
+      let ((formR, pR), atoms''') ← (reifyEvalProof envExpr r).run atoms''
+      let fact : Fact := { rel := .le, form := formR.add (formL.scale (-1)) }
+      let holds := mkAppN (mkConst ``holds_le_of)
+        #[envExpr, toExpr formL, toExpr formR, l, r, pL, pR, pf]
+      pure (fhs.push (fact, holds), atoms''')
+    let factsHolds := result.1
+    let facts := (factsHolds.map (·.1)).toList
+    match Integer.solve facts with
+    | .error _ => throwError "kan_saturate: no refutation in the linear integer fragment"
+    | .ok cert => do
+      -- fold the certificate combination: ∑ cᵢ · factᵢ, accumulating the proof
+      let zeroForm : LinForm := { terms := [], const := 0 }
+      let zeroProof := mkApp (mkConst ``Int.le_refl) (toExpr (0 : Int))
+      let (foldedForm, foldedProof) ← cert.combo.foldlM
+        (fun (acc : LinForm × Expr) (ci : Int × Nat) => do
+          let (accForm, accProof) := acc
+          let (c, idx) := ci
+          let some (fact, holds) := factsHolds[idx]? | throwError "kan_saturate: bad certificate index"
+          let scaled := fact.form.scale c
+          let cNonneg ← mkDecideProof (← mkAppM ``LE.le #[toExpr (0 : Int), toExpr c])
+          let scaledProof := mkAppN (mkConst ``holds_le_scale)
+            #[envExpr, toExpr c, toExpr fact.form, cNonneg, holds]
+          let addProof := mkAppN (mkConst ``holds_le_add)
+            #[envExpr, toExpr accForm, toExpr scaled, accProof, scaledProof]
+          pure (accForm.add scaled, addProof))
+        (zeroForm, zeroProof)
+      -- close: the folded form is nonneg, collapses to all-zero terms, negative constant
+      let collapseExpr ← mkAppM ``collapse #[toExpr foldedForm.terms]
+      let allExpr ← mkAppM ``List.all #[collapseExpr, mkConst ``isZeroCoeff]
+      let hCollapse ← mkDecideProof (← mkEq allExpr (toExpr true))
+      let hneg ← mkDecideProof (← mkAppM ``LT.lt #[toExpr foldedForm.const, toExpr (0 : Int)])
+      let falseProof := mkAppN (mkConst ``false_of_fold)
+        #[envExpr, toExpr foldedForm, foldedProof, hCollapse, hneg]
+      goal.assign falseProof
 
 end Tactic
 end KanSaturation

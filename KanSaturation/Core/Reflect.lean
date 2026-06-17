@@ -34,4 +34,17 @@ theorem le_const_of_holds (env : Var → Int) (c : Int)
     (h : 0 ≤ (LinForm.mk [] c).eval env) : 0 ≤ c := by
   kan_exact (Int.zero_add c ▸ h)
 
+/-- From a hypothesis `lhs ≤ rhs` and reifications of both sides, the difference form
+`rhs - lhs` holds (`0 ≤ eval`).  This is the per-hypothesis bridge the elaborator
+applies; the arithmetic lives here so the elaborator stays thin. -/
+theorem holds_le_of (env : Var → Int) (formL formR : LinForm) (lhs rhs : Int)
+    (pL : lhs = formL.eval env) (pR : rhs = formR.eval env) (hyp : lhs ≤ rhs) :
+    0 ≤ (formR.add (formL.scale (-1))).eval env := by
+  kan_exact (((LinForm.eval_add env formR (formL.scale (-1)))
+      |>.trans (congrArg (fun x => formR.eval env + x) (LinForm.eval_scale env (-1) formL))
+      |>.trans (congrArg (fun y => y + (-1) * formL.eval env) pR.symm)
+      |>.trans (congrArg (fun z => rhs + (-1) * z) pL.symm)
+      |>.trans (congrArg (fun w => rhs + w) (Int.neg_one_mul lhs))
+      |>.trans Int.sub_eq_add_neg.symm).symm ▸ Int.sub_nonneg.mpr hyp)
+
 end KanSaturation

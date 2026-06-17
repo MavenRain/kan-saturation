@@ -37,4 +37,13 @@ def xEq2 : Fact := { rel := .eq, form := { terms := [(1, 0)],  const := -2 } }
 -- A satisfiable system is not refuted.
 #guard !(ok? (solve [xGe0]))
 
+/-! ## End-to-end: `kan_saturate` closes real goals with a kernel-checked proof.
+
+The single tactic, instantiated at the integer `Saturation`, refutes contradictory
+linear-integer hypotheses (the `omega` fragment, recovered through the unified engine). -/
+
+example (x : Int) (h₁ : 1 ≤ x) (h₂ : x ≤ 0) : False := by kan_saturate
+example (x : Int) (h₁ : 2 ≤ x) (h₂ : x ≤ 1) : False := by kan_saturate
+example (a b : Int) (h₁ : a + 1 ≤ b) (h₂ : b ≤ a) : False := by kan_saturate
+
 end KanSaturationExamples.IntegerDemo

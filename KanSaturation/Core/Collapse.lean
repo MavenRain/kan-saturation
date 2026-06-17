@@ -73,4 +73,22 @@ theorem sumTerms_allZero (env : Var → Int) (terms : List (Int × Var)) :
       ((congrArg (fun x => x + sumTerms env tail) (Int.zero_mul (env head.2))).trans
         ((Int.zero_add (sumTerms env tail)).trans (ih (Bool.and_eq_true_iff.mp hcons).2))))
 
+/-- If a form's terms collapse to all-zero coefficients, it evaluates to its constant.
+This is the collection step the replay applies to the folded combination. -/
+theorem eval_eq_const_of_collapse (env : Var → Int) (f : LinForm)
+    (h : (collapse f.terms).all isZeroCoeff = true) : f.eval env = f.const := by
+  kan_exact ((congrArg (fun s => s + f.const)
+      ((collapse_eval env f.terms).symm.trans (sumTerms_allZero env (collapse f.terms) h))).trans
+    (Int.zero_add f.const))
+
+/-- The replay's closing step: a folded `≤`-combination that is nonnegative, whose
+variable terms collapse to all-zero, and whose constant is negative, is a
+contradiction.  The elaborator applies this with `decide` for the last two arguments. -/
+theorem false_of_fold (env : Var → Int) (f : LinForm)
+    (foldedProof : 0 ≤ f.eval env)
+    (hCollapse : (collapse f.terms).all isZeroCoeff = true)
+    (hneg : f.const < 0) : False := by
+  kan_exact (absurd (eval_eq_const_of_collapse env f hCollapse ▸ foldedProof)
+    (Int.not_le.mpr hneg))
+
 end KanSaturation
