@@ -7,6 +7,7 @@ import KanSaturation.Core.Saturation
 import KanSaturation.Core.Engine
 import KanSaturation.Core.Eval
 import KanSaturation.Core.Reflect
+import KanSaturation.Core.Collapse
 
 -- Instances: the deciders recovered as instances of the one engine.
 import KanSaturation.Instances.Integer
