@@ -46,4 +46,10 @@ example (x : Int) (h₁ : 1 ≤ x) (h₂ : x ≤ 0) : False := by kan_saturate
 example (x : Int) (h₁ : 2 ≤ x) (h₂ : x ≤ 1) : False := by kan_saturate
 example (a b : Int) (h₁ : a + 1 ≤ b) (h₂ : b ≤ a) : False := by kan_saturate
 
+-- Extended reifier: subtraction, unary negation, and multiplication by a constant.
+example (x : Int) (h₁ : 1 ≤ x - 1) (h₂ : x ≤ 1) : False := by kan_saturate
+example (x : Int) (h₁ : 1 ≤ -x) (h₂ : 0 ≤ x) : False := by kan_saturate
+example (x : Int) (h₁ : 2 * x ≤ 2) (h₂ : 2 ≤ x) : False := by kan_saturate
+example (x : Int) (h₁ : x * 3 ≤ 3) (h₂ : 2 ≤ x) : False := by kan_saturate
+
 end KanSaturationExamples.IntegerDemo

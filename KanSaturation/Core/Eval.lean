@@ -82,4 +82,32 @@ theorem LinForm.eval_atom (env : Var → Int) (v : Var) :
     (LinForm.mk [(1, v)] 0).eval env = env v :=
   ((Int.add_zero (1 * env v + 0)).trans (Int.add_zero (1 * env v))).trans (Int.one_mul (env v))
 
+/-- Reification bridge for negation: `-a` reifies to `fa` scaled by `-1`. -/
+theorem reify_neg (env : Var → Int) (fa : LinForm) (a : Int) (pa : a = fa.eval env) :
+    -a = (fa.scale (-1)).eval env :=
+  (((LinForm.eval_scale env (-1) fa).trans (congrArg (fun z => -1 * z) pa.symm)).trans
+    (Int.neg_one_mul a)).symm
+
+/-- Reification bridge for multiplication by a constant: `k * a` reifies to `fa` scaled
+by `k`. -/
+theorem reify_mul_const (env : Var → Int) (fa : LinForm) (a k : Int) (pa : a = fa.eval env) :
+    k * a = (fa.scale k).eval env :=
+  ((LinForm.eval_scale env k fa).trans (congrArg (fun z => k * z) pa.symm)).symm
+
+/-- Reification bridge for multiplication by a constant on the right. -/
+theorem reify_mul_const_r (env : Var → Int) (fa : LinForm) (a k : Int) (pa : a = fa.eval env) :
+    a * k = (fa.scale k).eval env :=
+  (Int.mul_comm a k).trans (reify_mul_const env fa a k pa)
+
+/-- Reification bridge for subtraction: `a - b` reifies to `fa + (-1)·fb`. -/
+theorem reify_sub (env : Var → Int) (fa fb : LinForm) (a b : Int)
+    (pa : a = fa.eval env) (pb : b = fb.eval env) :
+    a - b = (fa.add (fb.scale (-1))).eval env :=
+  ((((((LinForm.eval_add env fa (fb.scale (-1))).trans
+      (congrArg (fun z => fa.eval env + z) (LinForm.eval_scale env (-1) fb))).trans
+      (congrArg (fun y => y + (-1) * fb.eval env) pa.symm)).trans
+      (congrArg (fun w => a + (-1) * w) pb.symm)).trans
+      (congrArg (fun u => a + u) (Int.neg_one_mul b))).trans
+      Int.sub_eq_add_neg.symm).symm
+
 end KanSaturation

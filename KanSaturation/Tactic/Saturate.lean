@@ -18,8 +18,9 @@ the i-th interned atom.  Proofs are assembled from the `Core.Eval` lemmas
 (`eval_add`, `eval_const`, `eval_atom`) via congruence.  Tactic-implementation
 meta-code, exempt from the kan-tactics-only rule.
 
-Scope (this part): `+`, integer literals, and atoms, with any other shape interned as
-an opaque atom (sound; richer shapes such as `*` and `-` are added later).
+Scope (this part): `+`, `-`, unary `-`, multiplication by a constant factor, integer
+literals, and atoms, with any other shape (including a genuinely nonlinear product)
+interned as an opaque atom, which is always sound.
 -/
 
 open Lean Lean.Meta Lean.Elab.Tactic
@@ -48,7 +49,18 @@ def reifyAtom (envExpr : Expr) (e : Expr) : StateT (Array Expr) MetaM (LinForm �
   let lem := mkApp2 (mkConst ``LinForm.eval_atom) envExpr (toExpr v)
   pure (f, ← mkEqSymm lem)
 
-/-- Verified reification: returns `(f, proof : e = f.eval env)`, interning atoms. -/
+/-- Recognize an integer-literal `Expr` (`OfNat` or `Neg` of one) and return its value. -/
+partial def intLitOf? (e : Expr) : Option Int :=
+  match e.getAppFnArgs with
+  | (``OfNat.ofNat, #[_, n, _]) =>
+      if let .lit (.natVal k) := n then some (Int.ofNat k) else none
+  | (``Neg.neg, #[_, _, a]) => (intLitOf? a).map (fun k => -k)
+  | _ => none
+
+/-- Verified reification: returns `(f, proof : e = f.eval env)`, interning atoms.
+Handles `+`, `-`, unary `-`, multiplication by a constant factor, integer literals, and
+atoms; any other shape (including a genuinely nonlinear product) is interned as an
+opaque atom, which is always sound. -/
 partial def reifyEvalProof (envExpr : Expr) (e : Expr) :
     StateT (Array Expr) MetaM (LinForm × Expr) := do
   match e.getAppFnArgs with
@@ -60,6 +72,27 @@ partial def reifyEvalProof (envExpr : Expr) (e : Expr) :
       let congr ← mkCongr (← mkCongrArg addFn pa) pb
       let lem := mkApp3 (mkConst ``LinForm.eval_add) envExpr (toExpr fa) (toExpr fb)
       pure (f, ← mkEqTrans congr (← mkEqSymm lem))
+  | (``HSub.hSub, #[_, _, _, _, a, b]) => do
+      let (fa, pa) ← reifyEvalProof envExpr a
+      let (fb, pb) ← reifyEvalProof envExpr b
+      let f := fa.add (fb.scale (-1))
+      let lem := mkAppN (mkConst ``reify_sub) #[envExpr, toExpr fa, toExpr fb, a, b, pa, pb]
+      pure (f, lem)
+  | (``Neg.neg, #[_, _, a]) => do
+      let (fa, pa) ← reifyEvalProof envExpr a
+      let f := fa.scale (-1)
+      let lem := mkAppN (mkConst ``reify_neg) #[envExpr, toExpr fa, a, pa]
+      pure (f, lem)
+  | (``HMul.hMul, #[_, _, _, _, a, b]) => do
+      -- linear only when one factor is a constant literal; prefer the left factor.
+      let scaleBy : Expr → Int → Name → StateT (Array Expr) MetaM (LinForm × Expr) :=
+        fun operand k lem => do
+          let (f, p) ← reifyEvalProof envExpr operand
+          pure (f.scale k, mkAppN (mkConst lem) #[envExpr, toExpr f, operand, toExpr k, p])
+      (intLitOf? a).elim
+        ((intLitOf? b).elim (reifyAtom envExpr e)
+          (fun k => scaleBy a k ``reify_mul_const_r))
+        (fun k => scaleBy b k ``reify_mul_const)
   | (``OfNat.ofNat, #[_, n, _]) =>
       if let .lit (.natVal k) := n then
         let c : Int := Int.ofNat k
@@ -108,33 +141,33 @@ elab "kan_saturate" : tactic => do
       pure (fhs.push (fact, holds), atoms''')
     let factsHolds := result.1
     let facts := (factsHolds.map (·.1)).toList
-    match Integer.solve facts with
-    | .error _ => throwError "kan_saturate: no refutation in the linear integer fragment"
-    | .ok cert => do
-      -- fold the certificate combination: ∑ cᵢ · factᵢ, accumulating the proof
-      let zeroForm : LinForm := { terms := [], const := 0 }
-      let zeroProof := mkApp (mkConst ``Int.le_refl) (toExpr (0 : Int))
-      let (foldedForm, foldedProof) ← cert.combo.foldlM
-        (fun (acc : LinForm × Expr) (ci : Int × Nat) => do
-          let (accForm, accProof) := acc
-          let (c, idx) := ci
-          let some (fact, holds) := factsHolds[idx]? | throwError "kan_saturate: bad certificate index"
-          let scaled := fact.form.scale c
-          let cNonneg ← mkDecideProof (← mkAppM ``LE.le #[toExpr (0 : Int), toExpr c])
-          let scaledProof := mkAppN (mkConst ``holds_le_scale)
-            #[envExpr, toExpr c, toExpr fact.form, cNonneg, holds]
-          let addProof := mkAppN (mkConst ``holds_le_add)
-            #[envExpr, toExpr accForm, toExpr scaled, accProof, scaledProof]
-          pure (accForm.add scaled, addProof))
-        (zeroForm, zeroProof)
-      -- close: the folded form is nonneg, collapses to all-zero terms, negative constant
-      let collapseExpr ← mkAppM ``collapse #[toExpr foldedForm.terms]
-      let allExpr ← mkAppM ``List.all #[collapseExpr, mkConst ``isZeroCoeff]
-      let hCollapse ← mkDecideProof (← mkEq allExpr (toExpr true))
-      let hneg ← mkDecideProof (← mkAppM ``LT.lt #[toExpr foldedForm.const, toExpr (0 : Int)])
-      let falseProof := mkAppN (mkConst ``false_of_fold)
-        #[envExpr, toExpr foldedForm, foldedProof, hCollapse, hneg]
-      goal.assign falseProof
+    let cert ← (Integer.solve facts).toOption.getDM
+      (throwError "kan_saturate: no refutation in the linear integer fragment")
+    -- fold the certificate combination: ∑ cᵢ · factᵢ, accumulating the proof
+    let zeroForm : LinForm := { terms := [], const := 0 }
+    let zeroProof := mkApp (mkConst ``Int.le_refl) (toExpr (0 : Int))
+    let (foldedForm, foldedProof) ← cert.combo.foldlM
+      (fun (acc : LinForm × Expr) (ci : Int × Nat) => do
+        let (accForm, accProof) := acc
+        let (c, idx) := ci
+        let (fact, holds) ← (factsHolds[idx]?).getDM
+          (throwError "kan_saturate: bad certificate index")
+        let scaled := fact.form.scale c
+        let cNonneg ← mkDecideProof (← mkAppM ``LE.le #[toExpr (0 : Int), toExpr c])
+        let scaledProof := mkAppN (mkConst ``holds_le_scale)
+          #[envExpr, toExpr c, toExpr fact.form, cNonneg, holds]
+        let addProof := mkAppN (mkConst ``holds_le_add)
+          #[envExpr, toExpr accForm, toExpr scaled, accProof, scaledProof]
+        pure (accForm.add scaled, addProof))
+      (zeroForm, zeroProof)
+    -- close: the folded form is nonneg, collapses to all-zero terms, negative constant
+    let collapseExpr ← mkAppM ``collapse #[toExpr foldedForm.terms]
+    let allExpr ← mkAppM ``List.all #[collapseExpr, mkConst ``isZeroCoeff]
+    let hCollapse ← mkDecideProof (← mkEq allExpr (toExpr true))
+    let hneg ← mkDecideProof (← mkAppM ``LT.lt #[toExpr foldedForm.const, toExpr (0 : Int)])
+    let falseProof := mkAppN (mkConst ``false_of_fold)
+      #[envExpr, toExpr foldedForm, foldedProof, hCollapse, hneg]
+    goal.assign falseProof
 
 end Tactic
 end KanSaturation
