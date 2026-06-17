@@ -54,9 +54,11 @@ partial def parseLinForm (e : Expr) : StateT (Array Expr) MetaM (Option LinForm)
       else
         pure none
   | (``OfNat.ofNat, #[_, n, _]) =>
-      match n.nat? with
-      | some k => pure (some { terms := [], const := Int.ofNat k })
-      | none   => let v ← internAtom e; pure (some { terms := [(1, v)], const := 0 })
+      if let .lit (.natVal k) := n then
+        pure (some { terms := [], const := Int.ofNat k })
+      else
+        let v ← internAtom e
+        pure (some { terms := [(1, v)], const := 0 })
   | _ =>
       let v ← internAtom e
       pure (some { terms := [(1, v)], const := 0 })

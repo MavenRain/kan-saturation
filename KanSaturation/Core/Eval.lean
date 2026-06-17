@@ -72,4 +72,14 @@ theorem LinForm.eval_scale (env : Var → Int) (k : Int) (f : LinForm) :
   kan_exact ((congrArg (fun x => x + k * f.const) (sumTerms_scale env k f.terms)).trans
     (Int.mul_add k (sumTerms env f.terms) f.const).symm)
 
+/-- A constant form evaluates to its constant. -/
+theorem LinForm.eval_const (env : Var → Int) (c : Int) :
+    (LinForm.mk [] c).eval env = c :=
+  Int.zero_add c
+
+/-- A single-variable unit form evaluates to that variable's value. -/
+theorem LinForm.eval_atom (env : Var → Int) (v : Var) :
+    (LinForm.mk [(1, v)] 0).eval env = env v :=
+  ((Int.add_zero (1 * env v + 0)).trans (Int.add_zero (1 * env v))).trans (Int.one_mul (env v))
+
 end KanSaturation
