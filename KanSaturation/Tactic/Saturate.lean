@@ -6,6 +6,7 @@ import KanSaturation.Core.Engine
 import KanSaturation.Instances.Integer
 import KanSaturation.Tactic.Reify
 import KanSaturation.Tactic.SaturateField
+import KanSaturation.Tactic.SaturateIdeal
 import KanTactics
 import Lean
 
@@ -216,10 +217,13 @@ def closeByNeg (iffLemma : Name) (sideArgs : Array Expr) (negHyp : Expr) :
     (← proveFalse).mapM fun fp => mkLambdaFVars #[h] fp
   lamOpt.mapM fun lam => do mkAppM ``Iff.mp #[← mkAppOptM iffLemma (sideArgs.map some), lam]
 
-/-- Refute the current context: try the integer engine, then the ordered-field one. -/
+/-- Refute the current context: try the integer engine, then the ordered-field one, then
+the ideal one (contradictory `ℚ` equalities, via a Nullstellensatz certificate). -/
 def proveFalseAny : MetaM (Option Expr) := do
   let r ← proveFalse
-  if r.isSome then pure r else proveFalseQ
+  if r.isSome then pure r else do
+    let q ← proveFalseQ
+    if q.isSome then pure q else proveFalseP
 
 /-- Build the proof for whatever goal shape `kan_saturate` supports: `False`, an integer
 or rational comparison (`≤`, `<`, `≥`, `>`, `=`), or the negation of a comparison.  The
@@ -256,7 +260,10 @@ def dispatchGoal (goalType : Expr) : MetaM (Option Expr) := do
           let p2Opt ← closeByNeg ``Int.not_lt #[a, b] (← mkAppM ``LT.lt #[a, b])
           (p1Opt.bind fun p1 => p2Opt.map fun p2 => (p1, p2)).mapM fun (p1, p2) =>
             mkAppM ``Int.le_antisymm #[p1, p2]
-        else dispatchGoalQ goalType
+        else do
+          -- a ℚ equality: the ordered-field (linarith) leg first, then the ideal one.
+          let q ← dispatchGoalQ goalType
+          if q.isSome then pure q else dispatchGoalP goalType
     | (``Not, #[p]) =>
         -- ¬P  is  P → False: introduce P, refute (integer leg, then ordered-field leg)
         withLocalDeclD `h p fun h => do (← proveFalseAny).mapM fun fp => mkLambdaFVars #[h] fp

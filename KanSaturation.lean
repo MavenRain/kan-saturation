@@ -13,9 +13,11 @@ import KanSaturation.Core.OrderedField
 -- Instances: the deciders recovered as instances of the one engine.
 import KanSaturation.Instances.Integer
 import KanSaturation.Instances.OrderedField
+import KanSaturation.Instances.Ideal
 
 -- Tactic layer: reification of Lean goals, and the verified reifier for replay.
 import KanSaturation.Tactic.Reify
+import KanSaturation.Tactic.SaturateIdeal
 import KanSaturation.Tactic.Saturate
 
 /-!
@@ -42,14 +44,19 @@ a left Kan extension (`KanSaturation.Reflector`), built with `comp-cat-theory`'s
 not on that theorem, so the whole stack stays Mathlib-free:
 `comp-cat-theory → kan-tactics → kan-saturation`, over core `Int`/`Nat`/`Rat`.
 
-## Layout (built up over the phases in the plan)
+## Layout
 
-* `KanSaturation.Core.Constraint`  — own datatypes over core ℤ/ℚ
-* `KanSaturation.Core.Saturation`  — the unifying-completeness interface
-* `KanSaturation.Core.Engine`      — the one saturate→reduce→refute algorithm
-* `KanSaturation.Core.OrderedField`— the ordered-field carrier + ℚ Farkas soundness
-* `KanSaturation.Core.Certificate` — certificate replay into a checked proof
-* `KanSaturation.Reflector`        — the saturation Kan extension via `adjToLan`
-* `KanSaturation.Tactic.Saturate`  — the single tactic `kan_saturate` (ℤ and ℚ)
-* `KanSaturation.Instances.*`      — omega / linarith / polyrith as instances
+* `KanSaturation.Core.Constraint`   — linear datatypes over core ℤ/ℚ
+* `KanSaturation.Core.Saturation`   — the unifying-completeness interface
+* `KanSaturation.Core.Engine`       — the one saturate→reduce→refute algorithm
+* `KanSaturation.Core.Eval`/`Collapse` — linear eval + collection soundness lemmas
+* `KanSaturation.Core.OrderedField` — the ordered-field carrier + ℚ Farkas soundness
+* `KanSaturation.Core.PolyReflect`  — multivariate-polynomial datatypes + ℚ ideal soundness
+* `KanSaturation.Instances.{Integer,OrderedField,Ideal}` — omega / linarith / polyrith
+* `KanSaturation.Tactic.{Saturate,SaturateField,SaturateIdeal}` — the `kan_saturate` legs
+  (ℤ, ℚ-linear, and ℚ-polynomial-ideal), each replaying a kernel-checked certificate
+
+The *saturation Kan extension* itself (`Lan` via `comp-cat-theory`'s `adjToLan`, the
+categorical capstone the thesis names) is the planned next module; the three deciders and
+their certificate replays above are complete.
 -/

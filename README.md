@@ -41,6 +41,21 @@ over core `Int` / `Nat` / `Rat` and the library's own polynomial/constraint data
 
 `tight` is documented per instance and is **not load-bearing for soundness**.
 
+## Implementation status
+
+All three legs are implemented as instances of the one engine, each with a kernel-checked
+certificate replay (`#print axioms` clean — only `propext`/`Classical.choice`/`Quot.sound`):
+
+* **`Instances.Integer`** (`omega`) — Fourier–Motzkin + Farkas certificate, over ℤ.
+* **`Instances.OrderedField`** (`linarith`) — the same engine, un-tightened strict facts, over ℚ.
+* **`Instances.Ideal`** (`polyrith`) — Buchberger superposition with cofactor provenance over
+  ℚ; closes both *refutation* goals (a nonzero constant in `⟨hyps⟩`, a Nullstellensatz
+  witness ⇒ `False`) and *equality* goals (`a = b` reduced to ideal membership `a − b ∈
+  ⟨hyps⟩`). First cut: a sound Buchberger core whose cofactor replay cancels monomials by
+  their raw (concatenated) exponent vectors, so it closes certificates already in aligned
+  raw form; cross-variable monomial reordering and full Gröbner completeness are deferred.
+  Soundness is the kernel-checked replay and is independent of these completeness caps.
+
 ## Use
 
 ```lean
