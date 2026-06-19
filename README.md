@@ -20,8 +20,10 @@ that saturate-then-reduce engine **once** and recovers the three deciders as the
 
 The *unifying completeness theorem* ("the saturation closure is tight", i.e.
 quantifier elimination / having a model companion) is the hypothesis under which the
-saturated objects are reflective; the reflector is then a **left Kan extension**, built
-with `comp-cat-theory`'s `adjToLan`. Soundness of `kan_saturate` rests on per-call,
+saturated objects are reflective; `comp-cat-theory`'s `adjToLan` then realizes the
+inclusion of the saturated subcategory as a **left Kan extension** of the identity
+along saturation (dually, `adjToRan` exhibits saturation itself as the matching right
+Kan extension). Soundness of `kan_saturate` rests on per-call,
 kernel-checked certificates, **not** on that theorem, which is why the entire stack
 stays Mathlib-free:
 
@@ -44,17 +46,29 @@ over core `Int` / `Nat` / `Rat` and the library's own polynomial/constraint data
 ## Implementation status
 
 All three legs are implemented as instances of the one engine, each with a kernel-checked
-certificate replay (`#print axioms` clean — only `propext`/`Classical.choice`/`Quot.sound`):
+certificate replay (`#print axioms` clean, only `propext`/`Classical.choice`/`Quot.sound`):
 
-* **`Instances.Integer`** (`omega`) — Fourier–Motzkin + Farkas certificate, over ℤ.
-* **`Instances.OrderedField`** (`linarith`) — the same engine, un-tightened strict facts, over ℚ.
-* **`Instances.Ideal`** (`polyrith`) — Buchberger superposition with cofactor provenance over
+* **`Instances.Integer`** (`omega`): Fourier–Motzkin + Farkas certificate, over ℤ.
+* **`Instances.OrderedField`** (`linarith`): the same engine, un-tightened strict facts, over ℚ.
+* **`Instances.Ideal`** (`polyrith`): Buchberger superposition with cofactor provenance over
   ℚ; closes both *refutation* goals (a nonzero constant in `⟨hyps⟩`, a Nullstellensatz
   witness ⇒ `False`) and *equality* goals (`a = b` reduced to ideal membership `a − b ∈
   ⟨hyps⟩`). First cut: a sound Buchberger core whose cofactor replay cancels monomials by
   their raw (concatenated) exponent vectors, so it closes certificates already in aligned
   raw form; cross-variable monomial reordering and full Gröbner completeness are deferred.
   Soundness is the kernel-checked replay and is independent of these completeness caps.
+
+The **categorical capstone** is implemented too:
+
+* **`Reflector`** is the *saturation Kan extension*.  A preorder is a thin category, so
+  saturation-as-a-closure-operator on the entailment preorder is left adjoint to the
+  inclusion of its fixed points (the saturated configurations).  `comp-cat-theory`'s
+  `adjToLan` turns that reflection into a genuine left Kan extension `include' =
+  Lan_saturate (Id)`, and `adjToRan` gives the dual `saturate = Ran_include' (Id)`.  The
+  three closure laws are exactly the per-instance tightness theorem, so they enter as the
+  `Closure` interface rather than as assumptions on soundness; a worked `Bool` instance
+  ("saturate to ⊤") witnesses the whole pipeline with `#print axioms` showing only
+  `propext`.
 
 ## Use
 
