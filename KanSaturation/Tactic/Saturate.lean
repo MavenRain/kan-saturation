@@ -2,6 +2,7 @@ import KanSaturation.Core.Constraint
 import KanSaturation.Core.Eval
 import KanSaturation.Core.Reflect
 import KanSaturation.Core.Collapse
+import KanSaturation.Core.Tighten
 import KanSaturation.Core.Engine
 import KanSaturation.Instances.Integer
 import KanSaturation.Tactic.Reify
@@ -167,7 +168,25 @@ def proveFalse : MetaM (Option Expr) := do
               ← mkAppM ``Int.le_of_eq #[← mkEqSymm pf]]
           pure #[(factLe, holdsLe), (factGe, holdsGe)]
     pure (fhs ++ entries, atoms''')
-  let factsHolds := result.1
+  -- integer tightening: for each `≤`-fact whose variable coefficients share a gcd `g > 1`,
+  -- add the gcd-tightened fact `0 ≤ ∑(aᵢ/g)xᵢ + ⌊c/g⌋` as an *extra sound* hypothesis (its
+  -- `holds` is `holds_gcdTighten` applied to the original `holds`).  This closes ℤ/ℚ gaps
+  -- like `2x = 1`; the engine and Farkas replay below consume it like any other `≤`-fact.
+  let tightened ← result.1.foldlM (init := (#[] : Array (Fact × Expr))) fun acc fh => do
+    let (fact, holds) := fh
+    let gNat := fact.form.terms.foldl (fun a ce => Nat.gcd a ce.1.natAbs) 0
+    if gNat > 1 then
+      let g : Int := Int.ofNat gNat
+      let fact' : Fact := { rel := .le, form := fact.form.gcdTighten g }
+      let hg ← mkDecideProof (← mkAppM ``LT.lt #[toExpr (0 : Int), toExpr g])
+      let dvdPred ← mkAppM ``KanSaturation.dvdCoeff #[toExpr g]
+      let allExpr ← mkAppM ``List.all #[toExpr fact.form.terms, dvdPred]
+      let hdvd ← mkDecideProof (← mkEq allExpr (toExpr true))
+      let holds' := mkAppN (mkConst ``KanSaturation.holds_gcdTighten)
+        #[envExpr, toExpr g, toExpr fact.form, hg, hdvd, holds]
+      pure (acc.push (fact', holds'))
+    else pure acc
+  let factsHolds := result.1 ++ tightened
   let facts := (factsHolds.map (·.1)).toList
   -- resolve the certificate into `(coeff, fact, holds)` triples; `none` if the engine
   -- found no refutation, a combination references a stale index, or any coefficient is

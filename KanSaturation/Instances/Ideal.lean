@@ -14,21 +14,23 @@ so a refutation is a replayable ideal-membership (Nullstellensatz) certificate.
 Soundness: every derived polynomial is a polynomial combination `∑ qᵢ · hypᵢ` of the
 original generators (the `combo` records the cofactor `qᵢ` per generator index `i`), so a
 derived **nonzero constant** polynomial `c` exhibits `c = ∑ qᵢ · hypᵢ` with each `hypᵢ = 0`,
-forcing `c = 0` — a contradiction the tactic layer replays into a kernel-checked proof.
+forcing `c = 0`, a contradiction the tactic layer replays into a kernel-checked proof.
 The single structural divergence from the integer / ordered-field `DFact` is that there is
 **no `Rel`** here: ideal generators are pure equalities (`poly = 0`), which is exactly what
 justifies a distinct `Saturation` instance (as `Instances.OrderedField` justifies its own).
 
 Scope (this leg): a *sound* core over polynomial-equality systems.  Coefficients are core
-`Rat` (field reduction divides by leading coefficients cleanly — `ℤ` would force
+`Rat` (field reduction divides by leading coefficients cleanly; `ℤ` would force
 pseudo-division, which is not a Gröbner procedure).  The monomial order is **graded-lex**,
-used only for leading-term selection and dedup — soundness is the kernel-checked eval
+used only for leading-term selection and dedup; soundness is the kernel-checked eval
 replay and is independent of the order.  The *tightness theorem* for this leg is
 **Hilbert's Nullstellensatz** (an infeasible system has a `1 ∈ ⟨hyps⟩` certificate); as in
 the other legs it is documented, **not** load-bearing for soundness, which rests on the
-per-call kernel-checked replay.  Termination reuses the engine's `fuel` / `maxBasis` caps
-(a refused fact can only cost a refutation, never fabricate one); a genuine Buchberger
-completeness story is deferred.
+per-call kernel-checked replay.  This leg uses the engine's **bounded accumulate** round
+(`Core.Engine.accumulateRound`): Buchberger never drops a fact, so it has no variable-count
+measure and is instead bounded by the capacity measure `cap + 1 - basis.size` (a refused fact
+can only cost a refutation, never fabricate one); a genuine Buchberger completeness story is
+deferred.
 -/
 
 namespace KanSaturation
@@ -116,7 +118,7 @@ def leadTerm? (p : MvPoly) : Option Mono := (normPoly p).terms.head?
 def isZeroPoly (p : MvPoly) : Bool := (normPoly p).terms.isEmpty
 
 /-- A canonical key for dedup *up to nonzero scaling*: the canonical form made monic by
-dividing through the leading coefficient.  **Dedup only** — the stored polynomial and its
+dividing through the leading coefficient.  **Dedup only**: the stored polynomial and its
 cofactor combo are never monic-divided (cf. `LinForm.key` in `Core.Constraint`), so the
 replayed certificate is exact. -/
 def polyKey (p : MvPoly) : MvPoly :=
@@ -217,7 +219,7 @@ def normForm : Nat → Array PFact → PFact → PFact
 def reduceFuel : Nat := 64
 
 /-- A degree cap on derived polynomials: resolvents whose total degree exceeds it are
-dropped — a *sound* incompleteness bound (a dropped fact can only cost a refutation, never
+dropped, a *sound* incompleteness bound (a dropped fact can only cost a refutation, never
 fabricate one) that bounds the accumulate-only saturation loop. -/
 def degreeCap : Nat := 64
 
@@ -239,12 +241,20 @@ def refuted? (basis : Array PFact) : Option Cert :=
         some ⟨d.combo, m.coeff⟩
       else none
 
-/-- The ideal leg as an instance of the single saturation engine. -/
+/-- Normal-form reduction of a derived fact (canonical polynomial). -/
+def reduceFact (d : PFact) : PFact := ⟨normPoly d.poly, d.combo⟩
+
+/-- The accumulate superposition step: the Buchberger S-polynomial consequences of every
+basis fact, each reduced to normal form modulo the basis. -/
+def step (basis : Array PFact) : Array PFact :=
+  basis.foldl (init := #[]) fun acc f => acc ++ (consequences basis f).map reduceFact
+
+/-- The ideal leg as an instance of the single saturation engine, via the bounded
+accumulate round over Buchberger superposition. -/
 instance instSaturation : Saturation PFact Cert where
-  consequences := consequences
-  measure d := (leadTerm? d.poly).elim 0 (fun m => monoDegree m.vars)
-  reduce _ d := ⟨normPoly d.poly, d.combo⟩
   refuted? := refuted?
+  measure := capMeasure
+  round := accumulateRound step
 
 /-- Tag a list of generator polynomials with unit cofactor provenance (`hypᵢ` with
 cofactor `1` at index `i`). -/
@@ -253,9 +263,9 @@ def ofHyps (hyps : List MvPoly) : Array PFact :=
     (hyps[i]?).elim acc (fun p => acc.push ⟨p, [(MvPoly.one, i)]⟩)
 
 /-- Decide a polynomial-equality system: `Except.ok` with a Nullstellensatz cofactor
-certificate iff a nonzero constant was derived in the ideal within the fuel bound. -/
-def solve (hyps : List MvPoly) (fuel : Nat := 1000) : Except EngineError Cert :=
-  run (ofHyps hyps) fuel
+certificate iff a nonzero constant was derived in the ideal. -/
+def solve (hyps : List MvPoly) : Except EngineError Cert :=
+  run (ofHyps hyps)
 
 /-! ## Ideal membership (for equality goals)
 
@@ -266,7 +276,7 @@ read off the cofactor representation `goal = ∑ qᵢ · hypᵢ`.  The tracked i
 so when `poly` reaches `0` the accumulated `combo` *is* the membership certificate.
 
 First cut: reduction is modulo the *raw* generators (not the saturated Gröbner basis), so
-membership is complete only where the generators already reduce the goal — exactly the
+membership is complete only where the generators already reduce the goal, exactly the
 documented restricted class.  Saturating before reducing is deferred. -/
 
 /-- One membership-reduction step under the invariant `goal = poly + ∑ combo`. -/

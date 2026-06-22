@@ -1,6 +1,7 @@
 import KanSaturation.Core.Constraint
 import KanSaturation.Core.Saturation
 import KanSaturation.Core.Engine
+import KanSaturation.Core.Eliminate
 
 /-!
 # `KanSaturation.Instances.Integer`
@@ -14,11 +15,12 @@ Soundness: every derived fact is a nonnegative-integer combination of the inputs
 a derived constant-false fact (`0 ≤ -1`, `0 = 5`, `0 < 0`) refutes the system, and its
 `combo` is exactly the certificate the tactic layer replays into a proof.
 
-Scope (this phase): a sound core over linear-integer constraints.  Integer-specific
-*tightening* (the Omega test's dark/grey shadows and `bmod` equality elimination) that
-closes the rational/integer gap is deferred to production hardening (plan phase 6);
-the present step is rational Fourier-Motzkin plus equality elimination, which is sound
-for ℤ and complete for the rational-infeasible class.
+The `round` is a genuine **variable-elimination** step (`Core.Eliminate`): one variable per
+round, dropping every constraint that mentions it, so the engine terminates by the variable
+count.  This refutes the full rational-infeasible class.  The ℤ/ℚ gap is closed by the *sound
+integer tightening* of `Core.Tighten` (gcd rounding of a single constraint), replayed at the
+tactic boundary; the Omega test's dark/grey-shadow splinters (a branching search) and `bmod`
+equality elimination remain the documented completeness frontier.
 -/
 
 namespace KanSaturation
@@ -97,24 +99,18 @@ def resolve (v : Var) (d e : DFact) : Option DFact :=
     | .lt, .le => none
     | .lt, .lt => none
 
-/-- A magnitude cap on derived coefficients.  Resolvents whose coefficients or constant
-exceed it are dropped — a *sound* incompleteness bound (dropping a derived fact can only
-cost a refutation, never fabricate one), which stops the accumulate-only saturation loop
-from chasing the unbounded coefficient growth of cyclic systems with non-unit
-coefficients.  Realistic Farkas certificates have tiny coefficients, far under this. -/
-def coeffCap : Nat := 1 <<< 14
+/-- All variables occurring across a derived-fact array (deduplicated), in occurrence order:
+the Fourier-Motzkin elimination schedule.  Every resolvent's variables are a subset of its
+parents', so this set never grows, and eliminating each in turn drives the system to
+constant constraints. -/
+def allVars (facts : Array DFact) : List Var :=
+  (facts.toList.flatMap (fun d => d.fact.form.vars)).eraseDups
 
-/-- Whether any coefficient or the constant of `f` exceeds `coeffCap` in magnitude. -/
-def tooBig (f : LinForm) : Bool :=
-  f.const.natAbs > coeffCap || f.terms.any fun ce => ce.1.natAbs > coeffCap
-
-/-- The saturation step: all sound one-variable eliminations of `d` against `basis`,
-dropping any resolvent whose coefficients exceed `coeffCap`. -/
-def consequences (basis : Array DFact) (d : DFact) : Array DFact :=
-  d.fact.form.vars.foldl (init := #[]) fun acc v =>
-    basis.foldl (init := acc) fun acc' e =>
-      (resolve v d e).elim acc' fun r =>
-        if tooBig r.fact.form then acc' else acc'.push r
+/-- Deduplicate derived facts up to positive scaling and term order (via the `BEq` `key`),
+keeping the first occurrence.  Completeness-preserving (scalar multiples are logically
+equivalent), and keeps the eliminated basis from carrying redundant copies. -/
+def dedup (facts : Array DFact) : Array DFact :=
+  facts.foldl (init := #[]) fun acc d => if acc.contains d then acc else acc.push d
 
 /-- Detect a derived constant-false fact and return its certificate. -/
 def refuted? (basis : Array DFact) : Option Cert :=
@@ -133,25 +129,49 @@ def refuted? (basis : Array DFact) : Option Cert :=
     else
       none
 
-/-- The integer leg as an instance of the single saturation engine. -/
-instance instSaturation : Saturation DFact Cert where
-  consequences := consequences
-  measure d := d.fact.form.terms.length
-  reduce _ d := { d with fact := { d.fact with form := d.fact.form.normalize } }
-  refuted? := refuted?
+/-- Normal-form reduction of a derived fact (merge like terms, drop zero coefficients). -/
+def reduceFact (d : DFact) : DFact :=
+  { d with fact := { d.fact with form := d.fact.form.normalize } }
+
+/-- Eliminate variable `v` by Fourier-Motzkin: keep the constraints free of `v`, add every
+sound resolvent that cancels `v` between two constraints containing it (each unordered pair
+once; `resolve` returns `none` for the pairs that cannot eliminate `v`, e.g. two same-sign
+inequalities), drop the rest, then normalize and deduplicate.  Each resolvent is a
+nonnegative-integer combination of its parents, so the `combo` provenance stays a Farkas
+certificate; normalizing drops `v`'s now-zero coefficient so the result is `v`-free. -/
+def eliminateVar (v : Var) (facts : Array DFact) : Array DFact :=
+  let withoutV := facts.filter (fun d => d.fact.form.coeffOf v == 0)
+  let withV    := facts.filter (fun d => d.fact.form.coeffOf v != 0)
+  let n := withV.size
+  let resolvents : Array DFact :=
+    (List.range n).foldl (init := #[]) fun acc i =>
+      (List.range n).foldl (init := acc) fun acc' j =>
+        if i < j then
+          (withV[i]?.bind fun d => withV[j]?.bind fun e => resolve v d e).elim acc'
+            (fun r => acc'.push r)
+        else acc'
+  dedup ((withoutV ++ resolvents).map reduceFact)
+
+/-- The integer leg as an instance of the single saturation engine, via the Fourier-Motzkin
+variable-elimination round (`Core.Eliminate`): one variable per round, dropping every
+constraint that mentions it, with the variable count as the well-founded measure. -/
+instance instSaturation : Saturation (ElimState DFact) Cert where
+  refuted? := elimRefuted? refuted?
+  measure := elimMeasure
+  round := elimRound eliminateVar
 
 /-- Tag a list of hypotheses with unit provenance (`hypᵢ` with coefficient `1`). -/
 def ofHyps (hyps : List Fact) : Array DFact :=
   (List.range hyps.length).foldl (init := #[]) fun acc i =>
-    match hyps[i]? with
-    | some f => acc.push { fact := f, combo := [((1 : Int), i)] }
-    | none   => acc
+    (hyps[i]?).elim acc (fun f => acc.push { fact := f, combo := [((1 : Int), i)] })
 
-/-- Decide a linear-integer system: `Except.ok` with a certificate iff a refutation
-was found within the fuel bound.  (Named `solve` to avoid shadowing the core
-`Decidable.decide` used above.) -/
-def solve (hyps : List Fact) (fuel : Nat := 1000) : Except EngineError Cert :=
-  run (ofHyps hyps) fuel
+/-- Decide a linear-integer system: `Except.ok` with a certificate iff a refutation was
+found.  Seeds the engine with the tagged hypotheses and the full elimination schedule.
+(Named `solve` to avoid shadowing the core `Decidable.decide` used above.) -/
+def solve (hyps : List Fact) : Except EngineError Cert :=
+  let facts := ofHyps hyps
+  let s : ElimState DFact := { facts := facts, todo := allVars facts }
+  run #[s]
 
 end Integer
 end KanSaturation

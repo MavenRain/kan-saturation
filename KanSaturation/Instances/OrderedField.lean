@@ -1,6 +1,7 @@
 import KanSaturation.Core.Constraint
 import KanSaturation.Core.Saturation
 import KanSaturation.Core.Engine
+import KanSaturation.Core.Eliminate
 import KanSaturation.Core.OrderedField
 import KanSaturation.Instances.Integer
 
@@ -12,13 +13,13 @@ The ordered-field leg: `linarith` recovered as a `Saturation` instance, with `�
 
 ## One engine, two deciders
 
-The saturation step is **rational Fourier-Motzkin** with nonnegative-combination
-provenance — exactly the integer leg's engine (`Instances.Integer`).  This module
-therefore *delegates* its `consequences`/`refuted?` to that engine rather than
-duplicating it, keeping a single source of truth for the algorithm (the library
-thesis: one engine, recovered as instances).  The ordered-field leg is nonetheless a
-**distinct** `Saturation` instance over its own `DFact`, because the legs diverge in
-two ways:
+The saturation step is **rational Fourier-Motzkin variable elimination** with
+nonnegative-combination provenance, exactly the integer leg's `eliminateVar`
+(`Instances.Integer`, via `Core.Eliminate`).  This module therefore *delegates* its
+`eliminateVar`/`refuted?` to that engine rather than duplicating it, keeping a single
+source of truth for the algorithm (the library thesis: one engine, recovered as
+instances).  The ordered-field leg is nonetheless a **distinct** `Saturation` instance
+over its own `DFact`, because the legs diverge in two ways:
 
 * **Reification (tactic layer).** `omega` tightens `a < b` to `a + 1 ≤ b` using
   integrality; `linarith` keeps `<` strict.  Feeding *un-tightened* strict facts to the
@@ -28,9 +29,9 @@ two ways:
   sound over any `OrderedField` (`Core.OrderedField`), with the certificate replayed
   through the field soundness lemmas at `ℚ`.
 
-When the integer leg gains its integrality tightening in `consequences` (the Omega
-test's dark/grey shadows, plan phase 6), this leg keeps the present pure-FM step as its
-own `consequences`; until then the delegation makes the sharing explicit.
+The integer leg's *integrality tightening* (`Core.Tighten`, replayed at the tactic
+boundary) is precisely what this leg omits: delegating only to `eliminateVar` keeps the
+ordered-field step pure rational FM, so rational-satisfiable systems stay unrefuted.
 
 The *tightness theorem* for this leg is **Farkas' lemma / LP duality** (every
 infeasible rational system has a nonnegative-combination certificate of `0 < 0`); as in
@@ -41,7 +42,7 @@ per-call kernel-checked replay.
 namespace KanSaturation
 
 /-- `ℚ` (core `Rat`) as the flagship `OrderedField`.  Every field is a core `Rat.*`
-lemma — no Mathlib, no `grind` internals — so the instance is immediate; the iff-shaped
+lemma (no Mathlib, no `grind` internals), so the instance is immediate; the iff-shaped
 core lemmas contribute their forward or backward direction. -/
 instance : OrderedField Rat where
   add_comm := Rat.add_comm
@@ -86,7 +87,7 @@ namespace OrderedField
 /-- A derived fact for the ordered-field leg: a constraint with its
 nonnegative-combination provenance.  Structurally identical to `Integer.DFact`, kept as
 a distinct type so this is a genuinely distinct `Saturation` instance (the legs diverge
-once the integer leg gains integrality tightening — see the module note). -/
+once the integer leg gains integrality tightening; see the module note). -/
 structure DFact where
   /-- The constraint `form rel 0`. -/
   fact  : Fact
@@ -108,22 +109,30 @@ the saturation loop deduplicates scalar multiples and reaches a fixpoint. -/
 instance : BEq DFact where
   beq a b := a.fact.rel == b.fact.rel && a.fact.form.key == b.fact.form.key
 
-/-- The saturation step: the integer leg's rational Fourier-Motzkin elimination,
-delegated through the `toInt`/`ofInt` view (no strict tightening — strict facts entered
-the engine as genuine `lt` and `combineRel`/`refuted?` already propagate them). -/
-def consequences (basis : Array DFact) (d : DFact) : Array DFact :=
-  (Integer.consequences (basis.map DFact.toInt) d.toInt).map DFact.ofInt
+/-- Eliminate `v` by the integer leg's *pure* rational Fourier-Motzkin, through the
+`toInt`/`ofInt` view.  No strict tightening (strict facts entered as genuine `lt`, which
+`resolve`/`refuted?` propagate) and, the soundness-carrying difference, **no integrality
+tightening**: this leg delegates only to the rational elimination, so rational-satisfiable
+systems (e.g. `0 < x ∧ x < 1` over `ℚ`) stay unrefuted where the integer leg would tighten
+them to a contradiction. -/
+def eliminateVar (v : Var) (facts : Array DFact) : Array DFact :=
+  (Integer.eliminateVar v (facts.map DFact.toInt)).map DFact.ofInt
 
 /-- Detect a derived constant-false fact, delegated to the shared engine. -/
 def refuted? (basis : Array DFact) : Option Cert :=
   Integer.refuted? (basis.map DFact.toInt)
 
-/-- The ordered-field leg as a distinct instance of the single saturation engine. -/
-instance instSaturation : Saturation DFact Cert where
-  consequences := consequences
-  measure d := d.fact.form.terms.length
-  reduce _ d := { d with fact := { d.fact with form := d.fact.form.normalize } }
-  refuted? := refuted?
+/-- The elimination schedule, delegated to the integer leg's `allVars`. -/
+def allVars (facts : Array DFact) : List Var :=
+  Integer.allVars (facts.map DFact.toInt)
+
+/-- The ordered-field leg as a distinct instance of the single saturation engine, via the
+same Fourier-Motzkin variable-elimination round as the integer leg (`Core.Eliminate`) but
+with the *pure* rational `eliminateVar` (no integrality tightening). -/
+instance instSaturation : Saturation (ElimState DFact) Cert where
+  refuted? := elimRefuted? refuted?
+  measure := elimMeasure
+  round := elimRound eliminateVar
 
 /-- Tag hypotheses with unit provenance.  Crucially, strict facts are passed through as
 genuine `lt` (no `a < b ↦ a + 1 ≤ b` tightening): that is the sole data-level difference
@@ -132,9 +141,12 @@ def ofHyps (hyps : List Fact) : Array DFact :=
   (Integer.ofHyps hyps).map DFact.ofInt
 
 /-- Decide a linear ordered-field system: `Except.ok` with a Farkas certificate iff a
-refutation was found within the fuel bound. -/
-def solve (hyps : List Fact) (fuel : Nat := 1000) : Except EngineError Cert :=
-  run (ofHyps hyps) fuel
+refutation was found.  Seeds the engine with the tagged hypotheses and elimination
+schedule. -/
+def solve (hyps : List Fact) : Except EngineError Cert :=
+  let facts := ofHyps hyps
+  let s : ElimState DFact := { facts := facts, todo := allVars facts }
+  run #[s]
 
 end OrderedField
 end KanSaturation

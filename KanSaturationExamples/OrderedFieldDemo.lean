@@ -9,8 +9,8 @@ leg, but fed *un-tightened* strict facts and interpreted over an ordered field. 
 
 The headline is the **`omega` vs `linarith` contrast**: `0 < x ∧ x < 1` is refutable
 over `ℤ` (no integer strictly between `0` and `1`) but *satisfiable* over `ℚ`
-(e.g. `x = 1/2`), so the integer leg refutes it and the ordered-field leg does not — from
-one engine, differing only in whether strict inequalities are tightened.
+(e.g. `x = 1/2`), so the integer leg refutes it and the ordered-field leg does not.  Both
+come from one engine, differing only in whether strict inequalities are tightened.
 -/
 
 namespace KanSaturationExamples.OrderedFieldDemo
@@ -42,6 +42,21 @@ def xLe0 : Fact := { rel := .le, form := { terms := [(-1, 0)], const := 0 } }
                            { rel := .le, form := { terms := [(-1, 0)], const := 0 } }])
 -- A genuinely contradictory strict ℚ system (`0 < x ∧ x ≤ 0`) IS refuted (Farkas).
 #guard ok? (OrderedField.solve [xPos, xLe0])
+
+/-! ## The tightening contrast: `2x = 1`.
+
+`2x = 1` is integer-infeasible (the integer leg tightens it to `x ≤ 0 ∧ x ≥ 1`) but
+*satisfiable* over `ℚ` (`x = 1/2`).  The ordered-field leg performs **no** integrality
+tightening, so it correctly does not refute it. -/
+
+/-- `2x ≤ 1`, i.e. `0 ≤ 1 - 2x`. -/
+def twoXle1 : Fact := { rel := .le, form := { terms := [(-2, 0)], const := 1 } }
+/-- `1 ≤ 2x`, i.e. `0 ≤ 2x - 1`. -/
+def twoXge1 : Fact := { rel := .le, form := { terms := [(2, 0)], const := -1 } }
+
+-- Over ℚ, `2x = 1` is satisfiable: not refuted (contrast the integer `2 * x = 1`
+-- `kan_saturate` refutation in IntegerDemo, where the tactic tightens it).
+#guard !(ok? (OrderedField.solve [twoXle1, twoXge1]))
 
 /-! ## End-to-end: `kan_saturate` closes real `ℚ` goals with a kernel-checked proof.
 
